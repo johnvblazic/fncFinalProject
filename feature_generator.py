@@ -5,6 +5,7 @@ import os
 import re
 from nltk.stem.porter import PorterStemmer
 from nltk.stem import WordNetLemmatizer
+from nltk.util import ngrams
 from spacy.symbols import VERB
 from subject_object_extraction import findSVOs
 from utils.dataset import DataSet
@@ -59,7 +60,7 @@ def getShortenedWords(text,nlp):
 	doc = nlp(text)
 	wordList = []
 	for i,token in enumerate(doc):
-		wordList.append(returnStem(token))
+		wordList.append(returnLemma(token))
 
 	return wordList
 
@@ -184,16 +185,9 @@ def refutingFeatures(headlines, bodies,nlp):
 
 	return X
 
-def getNGrams(text,numGrams,nlp):
-	doc = nlp(text)
-	if n < 1:
-		raise ValueError('n must be greater than or equal to 1')
-
-	ngrams_ = (doc[i: i + numGrams]
-			   for i in range(len(doc) - n + 1))
-	ngrams_ = (ngram for ngram in ngrams_
-			   if not any(w.is_space for w in ngram))
-	return ngrams_
+def getTriGrams(text,nlp):
+	trigrams =  ngrams(text,3)
+	return trigrams
 
 def nGramFeatures(headlines,bodies,nlp):
 	X = []
@@ -201,8 +195,8 @@ def nGramFeatures(headlines,bodies,nlp):
 		features = []
 		clean_headline = clean(headline)
 		clean_body = clean(body)
-		trigrams_headline = getNGrams(clean_headline,3,nlp)
-		trigrams_body = getSVOs(clean_body,3,nlp)
+		trigrams_headline = getTriGrams(clean_headline,nlp)
+		trigrams_body = getTriGrams(clean_body,nlp)
 		features.append(len(set(trigrams_headline)))
 		features.append(len(set(trigrams_body)))
 		#+1 smoothing on denominator -- headlines/bodies without useable SVOs should be 0, not 1
@@ -228,6 +222,24 @@ def svoFeatures(headlines,bodies,nlp):
 	return X
 
 
+def getDocVec(text,nlp):
+	doc = nlp(text)
+	features = doc.vector
+
+
+def docVecFeatures(headlines,bodies,nlp):
+	X = []
+	for i, (headline, body) in tqdm(enumerate(zip(headlines, bodies))):
+		features = []
+		clean_headline = clean(headline)
+		clean_body = clean(body)
+		clean_headline = getShortenedWords(clean_headline,nlp)
+		clean_body = getShortenedWords(clean_body,nlp)
+		features.append(len(set(clean_headline).intersection(clean_body)) / float(len(set(clean_headline).union(clean_body))))
+		X.append(features)
+
+	return X
+
 
 def generate_features(stances,dataset,name,nlp):
 	h, b, y = [],[],[]
@@ -241,33 +253,12 @@ def generate_features(stances,dataset,name,nlp):
 	X_negation = gen_or_load_feats(negationFeatures, h, b, "features/negation."+name+".npy",nlp)
 	X_svo = gen_or_load_feats(svoFeatures, h, b, "features/svo."+name+".npy",nlp)
 	X_ngram = gen_or_load_feats(nGramFeatures, h, b, "features/ngram."+name+".npy",nlp)
+	X_doc_vec = gen_or_load_feats(docVecFeatures, h, b, "features/docVec."+name+".npy",nlp)
 
-	X = np.c_[X_ngram, X_svo, X_refuting, X_overlap, X_negation]
+	X = np.c_[X_ngram, X_svo, X_refuting, X_overlap, X_negation,X_doc_vec]
+	#X = np.c_[X_ngram, X_svo, X_refuting, X_overlap, X_negation]
 	return X,y
 
-nlp = spacy.load('en')
-sentence = "This is an example sentence full of very large and very important words."
-sentence2 = "They are not the best words."
-sentence3 = "John won the money."
-print(sentence)
-print(removeStopWords(sentence, nlp))
-print(checkNegation(sentence2,nlp))
-print(getSVOs(sentence,nlp))
-print(getSVOs(sentence2,nlp))
-print(getSVOs(sentence3,nlp))
-
-d = DataSet()
 
 
-train_stances = get_stances(d)
-train_Xs, train_ys = generate_features(train_stances,d,"train",nlp)
 
-del d
-del train_stances
-
-X_train = np.vstack(tuple([train_Xs[i] for i in ids]))
-y_train = np.hstack(tuple([train_ys[i] for i in ids]))
-
-print(fold_stances[0][0])
-print(fold_stances[0][1])
-print(hold_out_stances[0])
