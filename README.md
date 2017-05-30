@@ -9,5 +9,4 @@ Tqdm - progress bars for monitoring that the code is running and not stuck in a 
 Sklearn - ML
 Numpy - ML
 	
-Command Line: 	python classifier.py “SVC” OR
-		python classifier.py “MLP”
+Command Line: 	python classifier.py
