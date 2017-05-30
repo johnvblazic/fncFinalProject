@@ -1,6 +1,8 @@
 import spacy
 import numpy as np
 from tqdm import tqdm
+import math
+import operator
 import os
 import re
 from nltk.stem.porter import PorterStemmer
@@ -8,6 +10,7 @@ from nltk.stem import WordNetLemmatizer
 from nltk.util import ngrams
 from spacy.symbols import VERB
 from subject_object_extraction import findSVOs
+from sklearn import feature_extraction
 from utils.dataset import DataSet
 from utils.generate_test_splits import kfold_split, get_stances_for_folds, generate_hold_out_split, get_stances
 from utils.score import report_score, LABELS, score_submission
@@ -21,6 +24,12 @@ def gen_or_load_feats(feat_fn, headlines, bodies, feature_file,nlp):
 		np.save(feature_file, feats)
 
 	return np.load(feature_file)
+
+
+def remove_stopwords(l):
+	# Removes stopwords from a list of tokens
+	return [w for w in l if w not in feature_extraction.text.ENGLISH_STOP_WORDS]
+
 
 def isNegatedVerb(token):
 	"""
@@ -40,6 +49,7 @@ def isNegatedVerb(token):
 
 	return False
 
+
 def removeStopWords(text,nlp):
 	newText = ""
 	for word in text.split():
@@ -50,11 +60,25 @@ def removeStopWords(text,nlp):
 
 	return newText
 
+
+def dot_product(v1, v2):
+	return sum(map(operator.mul, v1, v2))
+
+
+def cosineSimilarity(v1, v2):
+	prod = dot_product(v1, v2)
+	len1 = math.sqrt(dot_product(v1, v1))
+	len2 = math.sqrt(dot_product(v2, v2))
+	return prod / (len1 * len2)
+
+
 def returnLemma(token):
 	return token.lemma_
 
+
 def returnStem(token):
 	return pstem.stem(token.lower_)
+
 
 def getShortenedWords(text,nlp):
 	doc = nlp(text)
@@ -63,6 +87,7 @@ def getShortenedWords(text,nlp):
 		wordList.append(returnLemma(token))
 
 	return wordList
+
 
 def checkNegation(text,nlp):
 	doc = nlp(text)
@@ -74,6 +99,7 @@ def checkNegation(text,nlp):
 	# general return is False
 	return False
 
+
 def countNegation(text,nlp):
 	doc = nlp(text)
 	verbs = set()
@@ -84,9 +110,11 @@ def countNegation(text,nlp):
 
 	return len(verbs)
 
+
 def clean(s):
 	# Cleans a string: Lowercasing, trimming, removing non-alphanumeric
 	return " ".join(re.findall(r'\w+', s, flags=re.UNICODE)).lower()
+
 
 def getSVOs(text,nlp):
 	doc = nlp(text)
@@ -94,6 +122,89 @@ def getSVOs(text,nlp):
 	svoList = []
 	svoList = findSVOs(doc)
 	return svoList
+
+
+def getSVOVector(svo,nlp):
+	tempS = str(svo[0]) + " " + str(svo[1]) + " " + str(svo[2])
+	doc = nlp(tempS)
+	npArray = np.zeros(300,)
+	for token in doc:
+		npArray = npArray + token.vector
+	return npArray
+
+
+def jointCosines(head1,head2,body):
+	cos1 = cosineSimilarity(head1,body)
+	cos2 = cosineSimilarity(head2,body)
+	#50/50 split. shouldn't change overall rankings if head2 is 0s
+	jointCos = (0.5*cos1) + (0.5*cos2)
+
+
+def SVOSets(headline_svo, body_svo, nlp):
+	headline_1 = np.zeros(300,)
+	headline_2 = np.zeros(300,)
+	body_1 = np.zeros(300,)
+	body_2 = np.zeros(300,)
+	body_3 = np.zeros(300,)
+	cos_1 = 0.0
+	cos_2 = 0.0
+	cos_3 = 0.0
+	if len(headline_svo) > 0 & len(body_svo) > 0:
+		if len(headline_svo) > 1:
+			headline_2 = getSVOVector(headline_svo[1],nlp)
+			headline_1 = getSVOVector(headline_svo[0],nlp)
+		elif len(headline_svo) > 0:
+			headline_1 = getSVOVector(headline_1)
+
+		#generate cosine sim for each body and replace as necessary. shouldn't break if nothing is there.
+		for trip in body_svo:
+			tripNP = getSVOVector(trip,nlp)
+			tripCos  = jointCosines(headline_1,headline_2,tripNP)
+			if tripCos > jointCosines(headline_1,headline_2,body_1):
+				body_3 = body_2
+				cos_3 = jointCosines(headline_1,headline_2,body_3)
+				body_2 = body_1
+				cos_2= jointCosines(headline_1,headline_2,body_2)
+				body_1 = tripNP
+				cos_1=tripCos
+			elif tripCos > jointCosines(headline_1,headline_2,body_2):
+				body_3 = body_2
+				cos_3 = jointCosines(headline_1,headline_2,body_3)
+				body_2 = tripNP
+				cos_2 = tripCos
+			elif tripCos > jointCosines(headline_1,headline_2,body_3):
+				body_3 = tripNP
+				cos_3 = tripCos
+
+	#create and return list for headline and body
+	headList = [headline_1,headline_2]
+	bodyList = [body_1,body_2,body_3]
+	return headList,bodyList,cos_1,cos_2,cos_3
+
+
+def svoFeatures(headlines,bodies,nlp):
+	X = []
+	for i, (headline, body) in tqdm(enumerate(zip(headlines, bodies))):
+		features = []
+		clean_headline = clean(headline)
+		clean_body = clean(body)
+		headline_svo = getSVOs(clean_headline,nlp)
+		body_svo = getSVOs(clean_body,nlp)
+		headList,bodyList,cos_1,cos_2,cos_3 = SVOSets(headline_svo,body_svo,nlp)
+		for head in headList:
+			for val in head:
+				features.append(val)
+
+		for body in bodyList:
+			for val in body:
+				features.append(val)
+
+		#features.append(cos_1)
+		#features.append(cos_2)
+		#features.append(cos_3)
+		X.append(features)
+
+	return X
 
 
 def genOrLoadFeats(feat_fn, headlines, bodies, feature_file):
@@ -185,39 +296,104 @@ def refutingFeatures(headlines, bodies,nlp):
 
 	return X
 
-def getTriGrams(text,nlp):
-	trigrams =  ngrams(text,3)
-	return trigrams
 
-def nGramFeatures(headlines,bodies,nlp):
+def ngrams(input, n):
+	input = input.split(' ')
+	output = []
+	for i in range(len(input) - n + 1):
+		output.append(input[i:i + n])
+	return output
+
+
+def chargrams(input, n):
+	output = []
+	for i in range(len(input) - n + 1):
+		output.append(input[i:i + n])
+	return output
+
+
+def append_chargrams(features, text_headline, text_body, size):
+	grams = [' '.join(x) for x in chargrams(" ".join(remove_stopwords(text_headline.split())), size)]
+	grams_hits = 0
+	grams_early_hits = 0
+	grams_first_hits = 0
+	for gram in grams:
+		if gram in text_body:
+			grams_hits += 1
+		if gram in text_body[:255]:
+			grams_early_hits += 1
+		if gram in text_body[:100]:
+			grams_first_hits += 1
+	features.append(grams_hits)
+	features.append(grams_early_hits)
+	features.append(grams_first_hits)
+	return features
+
+
+def append_ngrams(features, text_headline, text_body, size):
+	grams = [' '.join(x) for x in ngrams(text_headline, size)]
+	grams_hits = 0
+	grams_early_hits = 0
+	for gram in grams:
+		if gram in text_body:
+			grams_hits += 1
+		if gram in text_body[:255]:
+			grams_early_hits += 1
+	features.append(grams_hits)
+	features.append(grams_early_hits)
+	return features
+
+
+def hand_features(headlines, bodies, nlp):
+
+	def binary_co_occurence(headline, body):
+		# Count how many times a token in the title
+		# appears in the body text.
+		bin_count = 0
+		bin_count_early = 0
+		for headline_token in clean(headline).split(" "):
+			if headline_token in clean(body):
+				bin_count += 1
+			if headline_token in clean(body)[:255]:
+				bin_count_early += 1
+		return [bin_count, bin_count_early]
+
+	def binary_co_occurence_stops(headline, body):
+		# Count how many times a token in the title
+		# appears in the body text. Stopwords in the title
+		# are ignored.
+		bin_count = 0
+		bin_count_early = 0
+		for headline_token in remove_stopwords(clean(headline).split(" ")):
+			if headline_token in clean(body):
+				bin_count += 1
+				bin_count_early += 1
+		return [bin_count, bin_count_early]
+
+	def count_grams(headline, body):
+		# Count how many times an n-gram of the title
+		# appears in the entire body, and intro paragraph
+
+		clean_body = clean(body)
+		clean_headline = clean(headline)
+		features = []
+		features = append_chargrams(features, clean_headline, clean_body, 2)
+		features = append_chargrams(features, clean_headline, clean_body, 8)
+		features = append_chargrams(features, clean_headline, clean_body, 4)
+		features = append_chargrams(features, clean_headline, clean_body, 16)
+		features = append_ngrams(features, clean_headline, clean_body, 2)
+		features = append_ngrams(features, clean_headline, clean_body, 3)
+		features = append_ngrams(features, clean_headline, clean_body, 4)
+		features = append_ngrams(features, clean_headline, clean_body, 5)
+		features = append_ngrams(features, clean_headline, clean_body, 6)
+		return features
+
 	X = []
 	for i, (headline, body) in tqdm(enumerate(zip(headlines, bodies))):
-		features = []
-		clean_headline = clean(headline)
-		clean_body = clean(body)
-		trigrams_headline = getTriGrams(clean_headline,nlp)
-		trigrams_body = getTriGrams(clean_body,nlp)
-		features.append(len(set(trigrams_headline)))
-		features.append(len(set(trigrams_body)))
-		#+1 smoothing on denominator -- headlines/bodies without useable SVOs should be 0, not 1
-		features.append(len(set(trigrams_headline).intersection(trigrams_body))/float(len(set(trigrams_headline).union(trigrams_body)) + 1))
-		X.append(features)
+		X.append(binary_co_occurence(headline, body)
+				 + binary_co_occurence_stops(headline, body)
+				 + count_grams(headline, body))
 
-	return X
-
-def svoFeatures(headlines,bodies,nlp):
-	X = []
-	for i, (headline, body) in tqdm(enumerate(zip(headlines, bodies))):
-		features = []
-		clean_headline = clean(headline)
-		clean_body = clean(body)
-		headline_svo = getSVOs(clean_headline,nlp)
-		body_svo = getSVOs(clean_body,nlp)
-		features.append(len(set(headline_svo)))
-		features.append(len(set(body_svo)))
-		#+1 smoothing on denominator -- headlines/bodies without useable SVOs should be 0, not 1
-		features.append(len(set(headline_svo).intersection(body_svo))/float(len(set(headline_svo).union(body_svo)) + 1))
-		X.append(features)
 
 	return X
 
@@ -225,6 +401,7 @@ def svoFeatures(headlines,bodies,nlp):
 def getDocVec(text,nlp):
 	doc = nlp(text)
 	features = doc.vector
+	return features
 
 
 def docVecFeatures(headlines,bodies,nlp):
@@ -233,32 +410,65 @@ def docVecFeatures(headlines,bodies,nlp):
 		features = []
 		clean_headline = clean(headline)
 		clean_body = clean(body)
-		clean_headline = getShortenedWords(clean_headline,nlp)
-		clean_body = getShortenedWords(clean_body,nlp)
-		features.append(len(set(clean_headline).intersection(clean_body)) / float(len(set(clean_headline).union(clean_body))))
+		for val in getDocVec(clean_body,nlp):
+			features.append(val)
+		for val in getDocVec(clean_headline,nlp):
+			features.append(val)
 		X.append(features)
 
 	return X
 
 
-def generate_features(stances,dataset,name,nlp):
+def generate_polarity_features(stances,dataset,name,nlp):
+	h, b, y = [],[],[]
+	for stance in stances:
+		if LABELS.index(stance['Stance']) < 3:
+			y.append(LABELS.index(stance['Stance']))
+			h.append(stance['Headline'])
+			b.append(dataset.articles[stance['Body ID']])
+
+	X_overlap = gen_or_load_feats(wordOverlapFeatures, h, b, "features/polarity.overlap."+name+".npy",nlp)
+	X_refuting = gen_or_load_feats(refutingFeatures, h, b, "features/polarity.refuting."+name+".npy",nlp)
+	X_negation = gen_or_load_feats(negationFeatures, h, b, "features/polarity.negation."+name+".npy",nlp)
+	X_svo = gen_or_load_feats(svoFeatures, h, b, "features/polarity.svo."+name+".npy",nlp)
+	X_doc_vec = gen_or_load_feats(docVecFeatures, h, b, "features/polarity.docVec."+name+".npy",nlp)
+	X_hand = gen_or_load_feats(hand_features, h, b, "features/polarity.hand."+name+".npy",nlp)
+
+	#X = np.c_[X_ngram, X_svo, X_refuting, X_overlap, X_negation,X_doc_vec]
+	#X = np.c_[X_ngram, X_svo, X_refuting, X_overlap, X_negation]
+	#X = np.c_[X_ngram, X_svo, X_overlap, X_negation]
+	X = np.c_[X_hand, X_svo, X_doc_vec,X_negation,X_refuting]
+	return X,y
+
+def generate_relatedness_features(stances,dataset,name,nlp):
+	h, b, y = [],[],[]
+	for stance in stances:
+		if LABELS.index(stance['Stance']) < 3:
+			y.append(2)
+		else:
+			y.append(3)
+		#y.append(LABELS.index(stance['Stance']))
+		h.append(stance['Headline'])
+		b.append(dataset.articles[stance['Body ID']])
+
+	X_overlap = gen_or_load_feats(wordOverlapFeatures, h, b, "features/overlap."+name+".npy",nlp)
+	#X_refuting = gen_or_load_feats(refutingFeatures, h, b, "features/refuting."+name+".npy",nlp)
+	#X_negation = gen_or_load_feats(negationFeatures, h, b, "features/negation."+name+".npy",nlp)
+	#X_svo = gen_or_load_feats(svoFeatures, h, b, "features/svo."+name+".npy",nlp)
+	X_doc_vec = gen_or_load_feats(docVecFeatures, h, b, "features/docVec."+name+".npy",nlp)
+	X_hand = gen_or_load_feats(hand_features, h, b, "features/hand."+name+".npy",nlp)
+
+	#X = np.c_[X_ngram, X_svo, X_refuting, X_overlap, X_negation,X_doc_vec]
+	#X = np.c_[X_ngram, X_svo, X_refuting, X_overlap, X_negation]
+	#X = np.c_[X_ngram, X_svo, X_overlap, X_negation]
+	X = np.c_[X_overlap, X_doc_vec, X_hand]
+	return X,y
+
+
+def generate_test_stances(stances,dataset,name,nlp):
 	h, b, y = [],[],[]
 	for stance in stances:
 		y.append(LABELS.index(stance['Stance']))
 		h.append(stance['Headline'])
 		b.append(dataset.articles[stance['Body ID']])
-
-	X_overlap = gen_or_load_feats(wordOverlapFeatures, h, b, "features/overlap."+name+".npy",nlp)
-	X_refuting = gen_or_load_feats(refutingFeatures, h, b, "features/refuting."+name+".npy",nlp)
-	X_negation = gen_or_load_feats(negationFeatures, h, b, "features/negation."+name+".npy",nlp)
-	X_svo = gen_or_load_feats(svoFeatures, h, b, "features/svo."+name+".npy",nlp)
-	X_ngram = gen_or_load_feats(nGramFeatures, h, b, "features/ngram."+name+".npy",nlp)
-	X_doc_vec = gen_or_load_feats(docVecFeatures, h, b, "features/docVec."+name+".npy",nlp)
-
-	X = np.c_[X_ngram, X_svo, X_refuting, X_overlap, X_negation,X_doc_vec]
-	#X = np.c_[X_ngram, X_svo, X_refuting, X_overlap, X_negation]
-	return X,y
-
-
-
-
+	return y
