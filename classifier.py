@@ -4,6 +4,7 @@ import os
 import sys
 import re
 import numpy as np
+from sklearn.externals import joblib
 from sklearn.svm import SVC
 from sklearn.neural_network import MLPClassifier
 from sklearn.naive_bayes import MultinomialNB
@@ -39,29 +40,6 @@ y_train = np.hstack(tuple([train_ys]))
 del train_Xs
 del train_ys
 
-
-#########Training Section###########
-model = MLPClassifier(verbose=True)
-model1 = MLPClassifier(verbose=True)
-
-
-model1.fit(X_train,y_train)
-
-
-
-predicted = [LABELS[int(a)] for a in model1.predict(X_train)]
-actual = [LABELS[int(a)] for a in y_train]
-
-temp_score, _ = score_submission(actual, predicted)
-max_score, _ = score_submission(actual, actual)
-
-score = temp_score/max_score
-
-print("Score for training was - " + str(score))
-
-del X_train
-del y_train
-
 #########Generate Test Features Section###########
 t = DataSet(split="test")
 test_stances = get_stances(t)
@@ -72,30 +50,62 @@ X_test = np.vstack(tuple([test_Xs]))
 y_test = np.hstack(tuple([test_ys]))
 
 
-#########Prediction Section###########
+#########Training Section###########
+model = MLPClassifier(verbose=True)
+model1 = MLPClassifier()
+
+
+if os.path.isfile("relatednessModel.mdl"):
+	model1 = joblib.load("relatednessModel.mdl")
+else:
+	model1.fit(X_train,y_train)
+
 prediction = model1.predict(X_test)
 predicted = [LABELS[int(a)] for a in prediction]
 actual = [LABELS[int(a)] for a in y_test]
 
-temp_score, cm = score_submission(actual, predicted)
+temp_score, _ = score_submission(actual, predicted)
 max_score, _ = score_submission(actual, actual)
 
 score = temp_score/max_score
 
+highestScore = score
+bestModel1 = model1
+bestPrediction = []
+
+for m in range(1):
+	model1 = MLPClassifier()
+	print("Testing relatedness classifier number " + str(m))
+
+	model1.fit(X_train,y_train)
+
+	#########Prediction Section###########
+	prediction = model1.predict(X_test)
+	predicted = [LABELS[int(a)] for a in prediction]
+	actual = [LABELS[int(a)] for a in y_test]
+
+	temp_score, cm = score_submission(actual, predicted)
+	max_score, _ = score_submission(actual, actual)
+
+	score = temp_score/max_score
+
+	if score > highestScore:
+		print("New score - " + str(score) + " is better than old score - " + str(highestScore) + " replacing.")
+		highestScore = score
+		bestModel1 = model1
+		bestPrediction = prediction
+
+if os.path.isfile("relatednessModel.mdl"):
+	os.remove("relatednessModel.mdl")
+joblib.dump(bestModel1,"relatednessModel.mdl")
+
 
 print_confusion_matrix(cm)
+print("Score for related/unrealted testing was - " + str(highestScore))
 
-print("Score for related/unrealted testing was - " + str(score))
 
-i = 0
-#c = 0
-#while c < 100:
-#	if predicted[i] != actual[i]:
-		#print(test_stances[i],"|",predicted[i],"|",actual[i],"|",t.articles[test_stances[i]['Body ID']])
-		#c += 1
-
-#	i += 1
-
+orig_prediction = bestPrediction
+#########--------------Agree/Disagre/Discuss Section---------------###########
 train_Xs, train_ys = generate_polarity_features(train_stances,d,"train.lemma",nlp)
 
 X_train = np.vstack(tuple([train_Xs]))
@@ -104,24 +114,25 @@ y_train = np.hstack(tuple([train_ys]))
 del train_Xs
 del train_ys
 
-model.fit(X_train,y_train)
+if os.path.isfile("polarityModel.mdl"):
+	model = joblib.load("polarityModel.mdl")
+else:
+	model.fit(X_train,y_train)
 
-test_Xs, test_ys = generate_polarity_features(test_stances,t,"test.lemma",nlp)
 
-
+test_Xs,test_ys = generate_test_stances(test_stances,t,"test.lemma",nlp)
 X_test = np.vstack(tuple([test_Xs]))
-
-print(len(prediction))
-print(prediction)
-
-for val in prediction:
-	if int(val) != 3:
-		prediction[i] = model.predict(X_test[i].reshape(1,-1))
-		i += 1
-
-test_ys = generate_test_stances(test_stances,t,"test.lemma",nlp)
 y_test = np.hstack(tuple([test_ys]))
 
+i = 0
+c = 0
+for val in prediction:
+	if int(val) < 3:
+		prediction[i] = model.predict(X_test[i].reshape(1,-1))
+		c += 1
+	i += 1
+
+prediction = orig_prediction
 predicted = [LABELS[int(a)] for a in prediction]
 actual = [LABELS[int(a)] for a in y_test]
 
@@ -130,10 +141,43 @@ max_score, _ = score_submission(actual, actual)
 
 score = temp_score/max_score
 
+bestModel = model
+highestScore = score
+for m in range(1):
+	model = MLPClassifier()
+	print("Testing polarity classifier number " + str(m))
+	model.fit(X_train,y_train)
+
+	prediction = orig_prediction
+	i = 0
+	c = 0
+	for val in prediction:
+		if int(val) < 3:
+			prediction[i] = model.predict(X_test[i].reshape(1,-1))
+			c += 1
+		i += 1
+
+
+	predicted = [LABELS[int(a)] for a in prediction]
+	actual = [LABELS[int(a)] for a in y_test]
+
+	temp_score, cm = score_submission(actual, predicted)
+	max_score, _ = score_submission(actual, actual)
+
+	score = temp_score/max_score
+
+	if score > highestScore:
+		print("New score - " + str(score) + " is better than old score - " + str(highestScore) + " replacing.")
+		highestScore = score
+		bestModel = model
+
 
 print_confusion_matrix(cm)
+print("Score for full testing was - " + str(highestScore))
 
-print("Score for full testing was - " + str(score))
+if os.path.isfile("polarityModel.mdl"):
+	os.remove("polarityModel.mdl")
+joblib.dump(bestModel,"polarityModel.mdl")
 
 # SO a better way to do this would be to generate the polarity features for every data point and have them saved.
 # At that point, step through the predicted values from the first classifier, repredicting the value at each point

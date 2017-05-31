@@ -434,10 +434,9 @@ def generate_polarity_features(stances,dataset,name,nlp):
 	X_doc_vec = gen_or_load_feats(docVecFeatures, h, b, "features/polarity.docVec."+name+".npy",nlp)
 	X_hand = gen_or_load_feats(hand_features, h, b, "features/polarity.hand."+name+".npy",nlp)
 
-	#X = np.c_[X_ngram, X_svo, X_refuting, X_overlap, X_negation,X_doc_vec]
-	#X = np.c_[X_ngram, X_svo, X_refuting, X_overlap, X_negation]
-	#X = np.c_[X_ngram, X_svo, X_overlap, X_negation]
+
 	X = np.c_[X_hand, X_svo, X_doc_vec,X_negation,X_refuting]
+	X = np.c_[X_hand, X_svo, X_doc_vec]
 	return X,y
 
 def generate_relatedness_features(stances,dataset,name,nlp):
@@ -471,4 +470,14 @@ def generate_test_stances(stances,dataset,name,nlp):
 		y.append(LABELS.index(stance['Stance']))
 		h.append(stance['Headline'])
 		b.append(dataset.articles[stance['Body ID']])
-	return y
+
+	X_overlap = gen_or_load_feats(wordOverlapFeatures, h, b, "features/test.overlap."+name+".npy",nlp)
+	X_refuting = gen_or_load_feats(refutingFeatures, h, b, "features/test.refuting."+name+".npy",nlp)
+	X_negation = gen_or_load_feats(negationFeatures, h, b, "features/test.negation."+name+".npy",nlp)
+	X_svo = gen_or_load_feats(svoFeatures, h, b, "features/test.svo."+name+".npy",nlp)
+	X_doc_vec = gen_or_load_feats(docVecFeatures, h, b, "features/test.docVec."+name+".npy",nlp)
+	X_hand = gen_or_load_feats(hand_features, h, b, "features/test.hand."+name+".npy",nlp)
+
+	X = np.c_[X_hand, X_svo, X_doc_vec,X_negation,X_refuting]
+	X = np.c_[X_hand, X_svo, X_doc_vec]
+	return X,y
